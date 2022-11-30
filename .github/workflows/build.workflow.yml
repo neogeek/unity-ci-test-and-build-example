@@ -1,0 +1,76 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+
+    steps:
+      - name: Add mask for Unity serial key
+        run: |
+          echo "::add-mask::$(echo "${{ secrets.UNITY_SERIAL }}" | sed -E 's/\-[A-Z0-9]{4}$//')"
+
+      - name: Check out repository
+        uses: actions/checkout@v3
+
+      - name: Download Unity Installer
+        run: |
+          echo "Downloading Unity ${UNITY_INSTALLER_VERSION} from ${UNITY_INSTALLER_URL}"
+          mkdir -p .temp/
+          curl --retry 5 -o ".temp/${FILENAME}" "${UNITY_INSTALLER_URL}"
+          [ -f ".temp/${FILENAME}" ] && echo "${FILENAME} has been successfully downloaded!"
+          (cd .temp/ && tar -xvf "${FILENAME}")
+        env:
+          UNITY_INSTALLER_HASH: eee1884e7226
+          UNITY_INSTALLER_VERSION: 2021.3.14f1
+          UNITY_INSTALLER_URL: https://download.unity3d.com/download_unity/eee1884e7226/LinuxEditorInstaller/Unity.tar.xz
+          FILENAME: Unity.tar.xz
+
+      - name: Download WebGL Plugin
+        run: |
+          echo "Downloading WebGL Plugin from ${UNITY_PLUGIN_INSTALLER_URL}"
+          mkdir -p .temp/
+          curl --retry 5 -o ".temp/${FILENAME}" "${UNITY_PLUGIN_INSTALLER_URL}"
+          [ -f ".temp/${FILENAME}" ] && echo "${FILENAME} has been successfully downloaded!"
+          (cd .temp/ && tar -xvf "${FILENAME}")
+        env:
+          UNITY_PLUGIN_INSTALLER_URL: https://download.unity3d.com/download_unity/eee1884e7226/LinuxEditorTargetInstaller/UnitySetup-WebGL-Support-for-Editor-2021.3.14f1.tar.xz
+          FILENAME: UnitySetup-WebGL-Support-for-Editor-2021.3.14f1.tar.xz
+
+      - name: Authenticate with Unity
+        timeout-minutes: 5
+        run: |
+          ".temp/Editor/Unity" -quit -batchmode -serial "${{ secrets.UNITY_SERIAL }}" -username "${{ secrets.UNITY_USERNAME }}" -password "${{ secrets.UNITY_PASSWORD }}" || true
+
+      - name: Run Unity Tests
+        timeout-minutes: 10
+        run: |
+          ".temp/Editor/Unity" -batchmode -nographics -silent-crashes -projectPath "$(pwd)/" -runTests -testPlatform EditMode -logFile -
+          ".temp/Editor/Unity" -batchmode -nographics -silent-crashes -projectPath "$(pwd)/" -runTests -testPlatform PlayMode -logFile -
+
+      - name: Build
+        timeout-minutes: 10
+        run: |
+          ".temp/Editor/Unity" -projectPath "$(pwd)/" -quit -batchmode -nographics -executeMethod "Build.BuildWebGL" -logFile -
+
+      - name: Deauthenticate with Unity
+        timeout-minutes: 5
+        if: always()
+        run: |
+          ".temp/Editor/Unity" -quit -batchmode -returnlicense
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifact
+          path: Builds
+          if-no-files-found: error
